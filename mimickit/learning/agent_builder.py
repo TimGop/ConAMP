@@ -32,6 +32,9 @@ def build_agent(agent_file, env, device):
     elif (agent_name == "LCP"):
         import learning.lcp_agent as lcp_agent
         agent = lcp_agent.LCPAgent(config=agent_config, env=env, device=device)
+    elif (agent_name == "CLAMPReward"):
+        import learning.clamp_reward_agent as clamp_reward_agent
+        agent = clamp_reward_agent.CLAMPRewardAgent(config=agent_config, env=env, device=device)
     else:
         assert(False), "Unsupported agent: {}".format(agent_name)
 
