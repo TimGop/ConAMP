@@ -87,17 +87,19 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
         root_rot = info["root_rot"]
         desired_goal = info["desired_goal"]
 
-        # 3. CRITICAL FIX: Record them in the PPO buffer so _compute_rewards can use them!
+        # 3. Record them in the PPO buffer so _compute_rewards can use them!
         self._exp_buffer.record("root_pos", root_pos)
         self._exp_buffer.record("root_rot", root_rot)
         self._exp_buffer.record("desired_goal", desired_goal)
 
-        # 4. Append this step to the staging cache for the TrajectoryBuffer
+        # 4. CRITICAL FIX: Append to staging cache using .clone().detach() !
+        # Otherwise PyTorch appends a view of the live buffer, meaning
+        # all steps in the episode will overwrite themselves to match the final step.
         for env_idx in range(self.get_num_envs()):
-            self._active_episodes[env_idx]["curr_obs"].append(obs[env_idx])
-            self._active_episodes[env_idx]["curr_action"].append(action[env_idx])
-            self._active_episodes[env_idx]["curr_root_pos"].append(root_pos[env_idx])
-            self._active_episodes[env_idx]["curr_root_rot"].append(root_rot[env_idx])
+            self._active_episodes[env_idx]["curr_obs"].append(obs[env_idx].clone().detach())
+            self._active_episodes[env_idx]["curr_action"].append(action[env_idx].clone().detach())
+            self._active_episodes[env_idx]["curr_root_pos"].append(root_pos[env_idx].clone().detach())
+            self._active_episodes[env_idx]["curr_root_rot"].append(root_rot[env_idx].clone().detach())
 
         return
 
@@ -169,6 +171,7 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
 
         # Compute InfoNCE Task Reward
         if self._task_reward_weight > 0.0 and self._traj_buffer.is_ready(self._infonce_batch_size):
+
             # SLICE NORMALIZED OBS
             s_proprio = norm_obs[..., :-self._task_dim]
 
@@ -186,11 +189,13 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
                 dists = -torch.sqrt(torch.sum((phi_embed - psi_embed) ** 2, dim=-1))
 
                 # Exponential mapping limits reward to [0, 1]
-                learned_task_r = torch.exp(dists)
+                # (times 10 to match average magnitude of style rewards approx.)
+                learned_task_r = torch.exp(dists) * 12  # TODO: maybe add multiplier to config!
         else:
-            # WARMUP FALLBACK: Provide a small Euclidean reward to seed the TrajectoryBuffer
+            learned_task_r = torch.zeros(dist_to_goal.shape).to(device=self._device)
+            """# WARMUP FALLBACK: Provide a small Euclidean reward to seed the TrajectoryBuffer
             # If we don't do this, the agent never explores, and InfoNCE learns on garbage data
-            learned_task_r = torch.exp(-0.5 * dist_to_goal)
+            learned_task_r = torch.exp(-0.5 * dist_to_goal)""" # found to not be necessary
 
         # Compute AMP Discriminator Reward
         disc_obs = self._exp_buffer.get_data_flat("disc_obs")
@@ -213,7 +218,7 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
             "active_task_weight": self._task_reward_weight,
             "active_style_weight": self._disc_reward_weight,
             "fitness_mean_dist_to_goal": dist_to_goal.mean().item(),
-            "fitness_time_at_goal_rate": is_at_goal.mean().item()
+            "fitness_time_at_goal_rate": is_at_goal.mean().item(),
         }
 
     def _compute_infonce_loss(self, output_current, output_future):
@@ -265,14 +270,15 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
         }
 
     def _reset_done_envs(self, done):
-        # 1. Let the parent class handle the actual environment resets
+        # find which environments just finished BEFORE calling super()
+        # because super() will reset the 'done' tensor to 0 in-place!
+        done_indices = (done != DoneFlags.NULL.value).nonzero(as_tuple=False).flatten().tolist()
+
+        # 2. Let the parent class handle the actual environment resets
         obs, info = super()._reset_done_envs(done)
 
-        # 2. Find which environments just finished
-        done_indices = (done != DoneFlags.NULL.value).nonzero(as_tuple=False).flatten()
-
         # 3. Push completed episodes to the TrajectoryBuffer
-        for env_idx in done_indices.tolist():
+        for env_idx in done_indices:
             ep_data = self._active_episodes[env_idx]
 
             # InfoNCE needs at least 2 steps for current/future pairs
