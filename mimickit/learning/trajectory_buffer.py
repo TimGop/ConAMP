@@ -102,4 +102,4 @@ class TrajectoryBuffer:
         return output_current, output_future
 
     def is_ready(self, batch_size):
-        return self._size >= batch_size
+        return self._size >= (batch_size * 4)

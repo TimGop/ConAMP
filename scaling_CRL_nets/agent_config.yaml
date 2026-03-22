@@ -1,0 +1,86 @@
+agent_name: "CLAMPReward" # Updated to point to your new Agent
+
+model:
+  actor_net: "fc_2layers_1024units"
+  actor_init_output_scale: 0.01
+  actor_std_type: "FIXED"
+  action_std: 0.05
+
+  critic_net: "fc_2layers_1024units"
+
+  disc_net: "fc_2layers_1024units"
+
+  # --- New CLAMP Model Parameters ---
+  task_dim: 2                # Number of dimensions to slice off obs for the goal (X, Y)
+  embed_dim: 64              # Size of the metric space for Phi and Psi
+  infonce_hidden_dim: 256    # Hidden layer size for the Phi and Psi MLPs (1024 previously)
+
+actor_optimizer:
+    type: "SGD"
+    learning_rate: 5e-5
+
+critic_optimizer:
+    type: "SGD"
+    learning_rate: 1e-4
+
+disc_optimizer:
+    type: "SGD"
+    learning_rate: 2.5e-4
+    weight_decay: 0.0001
+
+
+infonce_optimizer:
+    type: "Adam"
+    learning_rate: 3e-4
+# --- New InfoNCE Optimizer ---
+#infonce_optimizer:
+#    type: "Adam"             # Adam usually performs better for contrastive representation learning
+#    learning_rate: 1e-4
+#    weight_decay: 0.0000
+
+discount: 0.99
+steps_per_iter: 32
+iters_per_output: 200
+test_episodes: 32
+normalizer_samples: 100000000
+
+actor_epochs: 5
+actor_batch_size: 4
+critic_epochs: 2
+critic_batch_size: 2
+disc_epochs: 2
+disc_batch_size: 2
+
+# --- New InfoNCE Training Parameters ---
+infonce_epochs: 30
+infonce_batch_size: 256      # Needs to be fairly large for good negative sampling
+infonce_temp: 0.1            # Temperature scaling for the logits
+logsumexp_penalty_coeff: 0.1
+
+# --- New Trajectory Buffer Parameters ---
+traj_buffer_size: 2000       # Maximum number of full episodes to store
+max_ep_len: 1200             # Max steps per episode (e.g., 20 seconds @ 60fps)
+
+# --- New Curriculum Learning Schedule ---
+warmup_steps: 10000000 #5000000        # Phase 1: Steps to stay purely on AMP (Task = 0.0)
+anneal_steps: 15000000 #10000000        # Phase 2: Steps over which to linearly blend the weights
+target_task_weight: 0.5      # Phase 3: Final weight for the InfoNCE reward
+target_style_weight: 0.5     # Phase 3: Final weight for the AMP discriminator reward
+
+td_lambda: 0.95
+ppo_clip_ratio: 0.2
+norm_adv_clip: 4.0
+action_bound_weight: 10.0
+action_entropy_weight: 0.0
+action_reg_weight: 0.0
+
+disc_buffer_size: 200000
+disc_replay_samples: 1000
+disc_logit_reg: 0.01
+disc_grad_penalty: 5
+disc_reward_scale: 2
+
+# These original static weights are now overridden by our curriculum logic,
+# but kept here as fallbacks just in case the parent class requires them.
+task_reward_weight: 0.5
+disc_reward_weight: 0.5

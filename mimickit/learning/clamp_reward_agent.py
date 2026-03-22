@@ -4,7 +4,8 @@ import util.torch_util as torch_util
 import learning.clamp_model as clamp_model
 import learning.amp_agent as amp_agent
 import learning.mp_optimizer as mp_optimizer
-
+import time
+import os
 import util.torch_util as torch_util
 import torch
 import torch.nn.functional as F
@@ -255,8 +256,7 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
         infonce_loss = -torch.mean(diag_logits - lse)
 
         # LOGSUMEXP PENALTY (Critical for unbounded L2 distances!)
-        penalty_coeff = self._config.get("logsumexp_penalty_coeff", 0.1)
-        lse_penalty = penalty_coeff * torch.mean(lse ** 2)
+        lse_penalty = self._logsumexp_penalty_coeff * torch.mean(lse ** 2)
 
         loss = infonce_loss + lse_penalty
 
@@ -299,14 +299,40 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
 
         return obs, info
 
+    def _reset_envs(self, env_ids=None):
+        obs, info = super()._reset_envs(env_ids)
+
+        # ONLY wipe the staging cache if this is a global hard reset (env_ids is None).
+        # This happens at initialization (Step 0) and during the 200-iteration evaluation.
+        # see base_agent.py!
+        if env_ids is None:
+            for env_idx in range(self.get_num_envs()):
+                self._active_episodes[env_idx] = {
+                    "curr_obs": [], "curr_action": [], "curr_root_pos": [], "curr_root_rot": []
+                }
+
+        return obs, info
+
     def _update_model(self):
         # Update the PPO Actor/Critic and the AMP Discriminator
         info = super()._update_model()
 
-        infonce_info = dict()
+        # 1. Pre-populate dummy values so the logger registers the keys in Iteration 0
+        infonce_info = {
+            "infonce_loss": 0.0,
+            "infonce_base_loss": 0.0,
+            "infonce_lse_penalty": 0.0,
+            "infonce_logits_mean": 0.0,
+            "infonce_logits_max": 0.0,
+            "infonce_lse_mean": 0.0
+        }
 
-        # Only train InfoNCE if the buffer has enough completed episodes!
+        # 2. Only train InfoNCE if the buffer has enough completed episodes!
         if self._traj_buffer.is_ready(self._infonce_batch_size):
+
+            # Use a temporary dict for accumulation so we don't mess up torch_util
+            running_info = dict()
+
             for _ in range(self._infonce_epochs):
                 # Sample a batch of geometrically-spaced positive pairs
                 output_current, output_future = self._traj_buffer.sample_infonce_pairs(self._infonce_batch_size)
@@ -318,9 +344,12 @@ class CLAMPRewardAgent(amp_agent.AMPAgent):
                 loss = loss_dict["infonce_loss"]
                 self._infonce_optimizer.step(loss)
 
-                torch_util.add_torch_dict(loss_dict, infonce_info)
+                torch_util.add_torch_dict(loss_dict, running_info)
 
-            torch_util.scale_torch_dict(1.0 / self._infonce_epochs, infonce_info)
+            torch_util.scale_torch_dict(1.0 / self._infonce_epochs, running_info)
+
+            # Overwrite the dummy zeros with the actual computed values
+            infonce_info.update(running_info)
 
         # Merge dictionaries for your logger
         return {**info, **infonce_info}

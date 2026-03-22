@@ -35,6 +35,9 @@ def build_agent(agent_file, env, device):
     elif (agent_name == "CLAMPReward"):
         import learning.clamp_reward_agent as clamp_reward_agent
         agent = clamp_reward_agent.CLAMPRewardAgent(config=agent_config, env=env, device=device)
+    elif (agent_name == "CLAMPObjective"):
+        import learning.clamp_objective_agent as clamp_objective_agent
+        agent = clamp_objective_agent.CLAMPObjectiveAgent(config=agent_config, env=env, device=device)
     else:
         assert(False), "Unsupported agent: {}".format(agent_name)
 
